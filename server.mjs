@@ -5,16 +5,54 @@ import { classify } from "./mock-ai.mjs";
 const html = await readFile(new URL("./index.html", import.meta.url));
 
 function json(response, status, body) {
-  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  response.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+  });
   response.end(JSON.stringify(body));
 }
 
 async function handleTriage(request, response) {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
-  const { text } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  const result = JSON.parse(await classify(text));
-  return json(response, 200, { status: "ready", ...result });
+  let text;
+  try {
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    text = body?.text;
+
+    if (typeof text !== "string" || !text.trim()) {
+      return json(response, 400, { status: "invalid_input" });
+    }
+  } catch {
+    return json(response, 400, { status: "invalid_input" });
+  }
+
+  try {
+    const result = JSON.parse(
+      await classify(text, { signal: AbortSignal.timeout(300) }),
+    );
+
+    const allowedTopics = ["delivery", "pricing", "other"];
+
+    if (
+      !allowedTopics.includes(result?.topic) ||
+      typeof result?.draft !== "string" ||
+      !result.draft.trim()
+    ) {
+      throw new Error("Invalid AI response");
+    }
+
+    return json(response, 200, {
+      status: "ready",
+      topic: result.topic,
+      draft: result.draft.trim(),
+    });
+  } catch {
+    return json(response, 200, {
+      status: "manual_review",
+      topic: null,
+      draft: null,
+    });
+  }
 }
 
 createServer(async (request, response) => {
